@@ -7,7 +7,7 @@ import time
 
 # Configuration
 BASE_URL = "https://www.fenegosida.org/rate-history.php"
-YEARS = list(range(2073, 2083))  # 2073 to 2082
+YEARS = list(range(2075, 2083))  # 2075 to 2082 (earlier years have no data)
 MONTHS = [
     "Baisakh", "Jestha", "Ashad", "Shrawan", "Bhadra", "Ashoj",
     "Kartik", "Mansir", "Poush", "Magh", "Falgun", "Chaitra"
@@ -18,15 +18,18 @@ def extract_price(text):
     if not text:
         return None
     
-    # Find numbers in bold tags or just numbers
-    bold_match = re.search(r'<b>(\d+)</b>', str(text))
-    if bold_match:
-        return int(bold_match.group(1))
+    # Convert to string if it's a BeautifulSoup element
+    text_str = str(text)
     
-    # Fallback: find any number in the text
-    number_match = re.search(r'\d+', str(text))
-    if number_match:
-        return int(number_match.group())
+    # Find the price in bold tags - this is the actual price
+    bold_match = re.search(r'<b>([0-9.]+)</b>', text_str)
+    if bold_match:
+        price_str = bold_match.group(1)
+        # Handle decimal numbers
+        if '.' in price_str:
+            return float(price_str)
+        else:
+            return int(price_str)
     
     return None
 
@@ -49,14 +52,34 @@ def scrape_rates_for_month(year, month):
         # Parse HTML
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Find the rate table
-        table = soup.find('table', class_='table_rate_month')
-        if not table:
-            print(f"No rate table found for {month} {year}")
+        # Debug: Check if we got valid HTML
+        if len(response.content) < 100:
+            print(f"Response too short for {month} {year}: {len(response.content)} bytes")
+            return []
+        
+        # Find all rate tables and select the first one (PER 1 TOLA)
+        tables = soup.find_all('table', class_='table_rate_month')
+        if not tables:
+            print(f"No rate tables found for {month} {year}")
+            return []
+        
+        # Use the first table which should be "PER 1 TOLA"
+        table = tables[0]
+        
+        # Check if this is indeed the PER 1 TOLA table
+        first_row = table.find('tr')
+        if first_row and 'PER 1 TOLA' not in first_row.get_text():
+            print(f"First table is not PER 1 TOLA for {month} {year}")
+            return []
+        
+        # Get all rows directly (no tbody in this HTML)
+        rows = table.find_all('tr')
+        
+        if not rows:
+            print(f"No rows found in table for {month} {year}")
             return []
         
         rates_data = []
-        rows = table.find('tbody').find_all('tr')
         
         for row in rows:
             # Skip header row
@@ -78,14 +101,15 @@ def scrape_rates_for_month(year, month):
             if len(tds) < 3:
                 continue
             
-            fine_gold_text = tds[0].text if tds[0] else ""
-            standard_gold_text = tds[1].text if tds[1] else ""
-            silver_text = tds[2].text if tds[2] else ""
+            # Pass the HTML element, not just the text
+            fine_gold_html = tds[0] if tds[0] else ""
+            standard_gold_html = tds[1] if tds[1] else ""
+            silver_html = tds[2] if tds[2] else ""
             
-            # Extract prices
-            fine_gold = extract_price(fine_gold_text)
-            standard_gold = extract_price(standard_gold_text)
-            silver = extract_price(silver_text)
+            # Extract prices from HTML (not text)
+            fine_gold = extract_price(fine_gold_html)
+            standard_gold = extract_price(standard_gold_html)
+            silver = extract_price(silver_html)
             
             # Create date string
             date_str = f"{year}-{month}-{day:02d}"
@@ -110,59 +134,96 @@ def scrape_rates_for_month(year, month):
         print(f"Error parsing data for {month} {year}: {e}")
         return []
 
+def test_single_month():
+    """Test function to check a single month before running full scrape"""
+    print("Testing with a single month first...")
+    test_data = scrape_rates_for_month(2082, "Bhadra")
+    if test_data:
+        print(f"Test successful! Found {len(test_data)} records")
+        print("Sample record:", test_data[0] if test_data else "None")
+        return True
+    else:
+        print("Test failed - no data found")
+        return False
+
 def main():
     """Main function to scrape all data and save to CSV"""
     print("Starting gold and silver rate scraping...")
-    print(f"Will scrape {len(YEARS)} years × {len(MONTHS)} months = {len(YEARS) * len(MONTHS)} combinations")
     
-    all_data = []
+    # Test first
+    if not test_single_month():
+        print("Aborting due to test failure. Check the website structure.")
+        return
+    
+    print(f"\nWill scrape {len(YEARS)} years × {len(MONTHS)} months = {len(YEARS) * len(MONTHS)} combinations")
+    
+    # Create output file immediately
+    output_file = f"gold_silver_rates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    fieldnames = ['date', 'year', 'month', 'day', 'fine_gold', 'standard_gold', 'silver']
+    
+    # Statistics tracking
+    total_records = 0
+    valid_fine_gold_count = 0
+    valid_standard_gold_count = 0
+    valid_silver_count = 0
+    fine_gold_prices = []
+    silver_prices = []
+    
     total_combinations = len(YEARS) * len(MONTHS)
     current_combination = 0
     
-    for year in YEARS:
-        for month in MONTHS:
-            current_combination += 1
-            print(f"\nProgress: {current_combination}/{total_combinations}")
-            
-            rates = scrape_rates_for_month(year, month)
-            all_data.extend(rates)
-            
-            # Be nice to the server - small delay between requests
-            time.sleep(1)
-    
-    # Save to CSV
-    output_file = f"gold_silver_rates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    
+    # Open CSV file and write header
     with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-        fieldnames = ['date', 'year', 'month', 'day', 'fine_gold', 'standard_gold', 'silver']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        
         writer.writeheader()
-        for row in all_data:
-            writer.writerow(row)
+        
+        for year in YEARS:
+            for month in MONTHS:
+                current_combination += 1
+                print(f"\nProgress: {current_combination}/{total_combinations}")
+                
+                rates = scrape_rates_for_month(year, month)
+                
+                # Write data immediately to CSV
+                if rates:
+                    for row in rates:
+                        writer.writerow(row)
+                        total_records += 1
+                        
+                        # Update statistics
+                        if row['fine_gold'] is not None:
+                            valid_fine_gold_count += 1
+                            fine_gold_prices.append(row['fine_gold'])
+                        if row['standard_gold'] is not None:
+                            valid_standard_gold_count += 1
+                        if row['silver'] is not None:
+                            valid_silver_count += 1
+                            silver_prices.append(row['silver'])
+                    
+                    # Flush to ensure data is written immediately
+                    csvfile.flush()
+                    print(f"✓ Wrote {len(rates)} records to CSV")
+                else:
+                    print(f"✗ No data found for {month} {year}")
+                
+                # Be nice to the server - small delay between requests
+                time.sleep(1)
     
     print(f"\nScraping completed!")
-    print(f"Total records collected: {len(all_data)}")
+    print(f"Total records collected: {total_records}")
     print(f"Data saved to: {output_file}")
     
-    # Print some statistics
-    if all_data:
-        valid_fine_gold = [r for r in all_data if r['fine_gold'] is not None]
-        valid_standard_gold = [r for r in all_data if r['standard_gold'] is not None]
-        valid_silver = [r for r in all_data if r['silver'] is not None]
-        
-        print(f"\nData quality:")
-        print(f"- Fine Gold records: {len(valid_fine_gold)}")
-        print(f"- Standard Gold records: {len(valid_standard_gold)}")
-        print(f"- Silver records: {len(valid_silver)}")
-        
-        if valid_fine_gold:
-            prices = [r['fine_gold'] for r in valid_fine_gold]
-            print(f"- Fine Gold price range: {min(prices)} - {max(prices)}")
-        
-        if valid_silver:
-            prices = [r['silver'] for r in valid_silver]
-            print(f"- Silver price range: {min(prices)} - {max(prices)}")
+    # Print final statistics
+    print(f"\nData quality:")
+    print(f"- Fine Gold records: {valid_fine_gold_count}")
+    print(f"- Standard Gold records: {valid_standard_gold_count}")
+    print(f"- Silver records: {valid_silver_count}")
+    
+    if fine_gold_prices:
+        print(f"- Fine Gold price range: {min(fine_gold_prices)} - {max(fine_gold_prices)}")
+    
+    if silver_prices:
+        print(f"- Silver price range: {min(silver_prices)} - {max(silver_prices)}")
 
 if __name__ == "__main__":
     main()
