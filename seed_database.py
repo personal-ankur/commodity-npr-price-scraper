@@ -8,9 +8,44 @@ import os
 import csv
 import psycopg2
 import psycopg2.extras
-from datetime import datetime
+from datetime import datetime, date
 import sys
 import glob
+import dotenv
+from nepali_calendar_utils import NepaliDateConverter
+
+dotenv.load_dotenv()
+
+# Nepali month names mapping (includes common spelling variations)
+NEPALI_MONTHS = {
+    "Baisakh": 1, "Jestha": 2, "Ashadh": 3, "Ashad": 3,  # Ashad is alternate spelling
+    "Shrawan": 4, "Bhadra": 5, "Ashwin": 6, "Ashoj": 6,  # Ashoj is alternate spelling  
+    "Kartik": 7, "Mangsir": 8, "Mansir": 8,  # Mansir is alternate spelling
+    "Poush": 9, "Magh": 10, "Falgun": 11, "Chaitra": 12
+}
+
+def convert_nepali_to_english_date(nepali_year, nepali_month, nepali_day):
+    """
+    Convert Nepali date to English date using nepali_calendar_utils library
+    """
+    try:
+        # Get month number from mapping
+        month_num = NEPALI_MONTHS.get(nepali_month)
+        if not month_num:
+            return None
+        
+        # Use the proper library for accurate conversion
+        converter = NepaliDateConverter()
+        result = converter.convert_nepali_to_english(nepali_year, month_num, nepali_day)
+        
+        # Extract date from CustomCalendar object
+        if result and hasattr(result, 'year') and hasattr(result, 'month') and hasattr(result, 'day_of_month'):
+            return date(result.year, result.month, result.day_of_month)
+        
+        return None
+    
+    except (ValueError, TypeError, Exception):
+        return None
 
 def get_database_connection():
     """Get database connection from environment variable"""
@@ -30,6 +65,7 @@ def create_table(conn):
     CREATE TABLE IF NOT EXISTS gold_silver_rates (
         id SERIAL PRIMARY KEY,
         date VARCHAR(50) NOT NULL,
+        english_date DATE,
         year INTEGER NOT NULL,
         month VARCHAR(20) NOT NULL,
         day INTEGER NOT NULL,
@@ -46,6 +82,13 @@ def create_table(conn):
     
     with conn.cursor() as cursor:
         cursor.execute(create_table_sql)
+        
+        # Add english_date column if it doesn't exist (migration)
+        cursor.execute("""
+            ALTER TABLE gold_silver_rates 
+            ADD COLUMN IF NOT EXISTS english_date DATE;
+        """)
+        
         conn.commit()
         print("✓ Table 'gold_silver_rates' created/verified")
 
@@ -67,8 +110,9 @@ def process_csv_file(csv_file_path, conn):
     with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
         reader = csv.DictReader(csvfile)
         
-        # Collect rows for batch insert
+        # Collect rows for batch insert with deduplication
         rows_to_insert = []
+        seen_keys = set()  # Track unique (year, month, day) combinations within batch
         
         for row_num, row in enumerate(reader, 1):
             try:
@@ -84,19 +128,31 @@ def process_csv_file(csv_file_path, conn):
                 month = row['month'].strip()
                 date_str = row['date'].strip()
                 
+                # Check for duplicates within the current batch
+                key = (year, month, day)
+                if key in seen_keys:
+                    print(f"Warning: Skipping duplicate row {row_num} - {date_str}")
+                    skipped_count += 1
+                    continue
+                
                 # Handle None/empty values for prices
                 fine_gold = int(row['fine_gold']) if row['fine_gold'] and row['fine_gold'].strip() else None
                 standard_gold = int(row['standard_gold']) if row['standard_gold'] and row['standard_gold'].strip() else None
                 silver = float(row['silver']) if row['silver'] and row['silver'].strip() else None
                 
+                # Convert Nepali date to English date
+                english_date = convert_nepali_to_english_date(year, month, day)
+                
                 rows_to_insert.append((
-                    date_str, year, month, day, fine_gold, standard_gold, silver
+                    date_str, english_date, year, month, day, fine_gold, standard_gold, silver
                 ))
+                seen_keys.add(key)
                 
                 # Batch insert every 1000 rows
                 if len(rows_to_insert) >= 1000:
                     inserted_count += insert_batch(conn, rows_to_insert)
                     rows_to_insert = []
+                    seen_keys = set()  # Reset for next batch
                 
             except (ValueError, KeyError) as e:
                 print(f"Error processing row {row_num}: {e}")
@@ -115,11 +171,12 @@ def insert_batch(conn, rows):
         return 0
     
     insert_sql = """
-    INSERT INTO gold_silver_rates (date, year, month, day, fine_gold, standard_gold, silver)
+    INSERT INTO gold_silver_rates (date, english_date, year, month, day, fine_gold, standard_gold, silver)
     VALUES %s
     ON CONFLICT (year, month, day) 
     DO UPDATE SET 
         date = EXCLUDED.date,
+        english_date = EXCLUDED.english_date,
         fine_gold = EXCLUDED.fine_gold,
         standard_gold = EXCLUDED.standard_gold,
         silver = EXCLUDED.silver,
@@ -190,12 +247,13 @@ def main():
     print("Starting database seeding process...")
     
     # Check for CSV files
-    csv_files = find_csv_files()
-    if not csv_files:
-        print("No CSV files found. Please run the scraping script first.")
-        sys.exit(1)
+    #csv_files = find_csv_files()
+    #if not csv_files:
+    #    print("No CSV files found. Please run the scraping script first.")
+    #    sys.exit(1)
     
-    print(f"Found {len(csv_files)} CSV file(s)")
+    #print(f"Found {len(csv_files)} CSV file(s)")
+    csv_files = ["data/prices.csv"]
     for i, file in enumerate(csv_files, 1):
         file_size = os.path.getsize(file) / 1024  # KB
         mod_time = datetime.fromtimestamp(os.path.getmtime(file))

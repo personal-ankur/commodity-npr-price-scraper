@@ -119,13 +119,17 @@ def _maybe_import_matplotlib():
         return None
 
 def save_plots(avg_df: pd.DataFrame, df_full: pd.DataFrame, out_dir: str):
+    import os, sys
     os.makedirs(out_dir, exist_ok=True)
-    plt = _maybe_import_matplotlib()
-    if plt is None:
-        print("[INFO] Skipping plots; matplotlib not installed.", file=sys.stderr)
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[WARN] matplotlib not available: {e}", file=sys.stderr)
         return
 
     metals = ["fine_gold","standard_gold","silver"]
+    nepali_months = ["Baisakh","Jestha","Ashadh","Shrawan","Bhadra","Ashwin",
+                     "Kartik","Mangsir","Poush","Magh","Falgun","Chaitra"]
 
     def bar_months(values, title, fname, ylabel="%"):
         months = avg_df["month"].tolist()
@@ -157,20 +161,74 @@ def save_plots(avg_df: pd.DataFrame, df_full: pd.DataFrame, out_dir: str):
         plt.savefig(path, dpi=160); plt.close()
         print(f"[OK] Saved plot: {path}")
 
+    # === NEW HELPERS FOR ALL-YEARS MONTH-BY-MONTH CHARTS ===
+    def month_year_pivot(metal: str):
+        # average price per (year, month_order)
+        g = (df_full
+             .groupby(["year","month_order"], as_index=False)[metal]
+             .mean())
+        # pivot to years x 12 months
+        piv = g.pivot(index="year", columns="month_order", values=metal)
+        # ensure all 12 months in order
+        piv = piv.reindex(columns=range(1, 13))
+        return piv
+
+    def heatmap_month_by_year(metal: str):
+        piv = month_year_pivot(metal)
+        plt.figure()
+        im = plt.imshow(piv.values, aspect="auto", interpolation="nearest")
+        plt.title(f"Month-by-Month Across Years — {metal.replace('_',' ').title()}")
+        plt.xlabel("Nepali Months"); plt.ylabel("Year")
+        plt.xticks(ticks=np.arange(12), labels=nepali_months, rotation=45, ha="right")
+        plt.yticks(ticks=np.arange(len(piv.index)), labels=piv.index.astype(int))
+        plt.colorbar(im, label="Average Price")
+        plt.tight_layout()
+        fname = f"monthly_by_year_heatmap_{metal}.png"
+        path = os.path.join(out_dir, fname)
+        plt.savefig(path, dpi=160); plt.close()
+        print(f"[OK] Saved plot: {path}")
+
+    def lines_month_by_year(metal: str):
+        piv = month_year_pivot(metal)
+        plt.figure()
+        years_sorted = list(piv.index.astype(int))
+        # Light lines for older years, slightly bolder for the most recent
+        for y in years_sorted[:-1]:
+            series = piv.loc[y].values
+            plt.plot(nepali_months, series, marker="o", alpha=0.5)
+        if years_sorted:
+            y_last = years_sorted[-1]
+            plt.plot(nepali_months, piv.loc[y_last].values, marker="o", linewidth=2.5, label=f"{y_last}")
+            plt.legend(title="Most recent year", loc="best")
+        plt.title(f"Month-by-Month Lines by Year — {metal.replace('_',' ').title()}")
+        plt.xlabel("Nepali Months"); plt.ylabel("Average Price")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        fname = f"monthly_by_year_lines_{metal}.png"
+        path = os.path.join(out_dir, fname)
+        plt.savefig(path, dpi=160); plt.close()
+        print(f"[OK] Saved plot: {path}")
+
+    # ====== EXISTING PLOTS (seasonality, YoY, recent-weighted, trend) ======
     for m in metals:
-        # Seasonality (%)
-        bar_months(avg_df[f"{m}_seasonality_%"], f"Detrended Seasonality (%): {m.replace('_',' ').title()}",
+        bar_months(avg_df[f"{m}_seasonality_%"],
+                   f"Detrended Seasonality (%): {m.replace('_',' ').title()}",
                    f"seasonality_{m}.png")
-        # YoY index (%)
-        bar_months(avg_df[f"{m}_yoy_month_index_%"], f"YoY-Normalized Month Index (%): {m.replace('_',' ').title()}",
+        bar_months(avg_df[f"{m}_yoy_month_index_%"],
+                   f"YoY-Normalized Month Index (%): {m.replace('_',' ').title()}",
                    f"yoy_index_{m}.png")
-        # Recent-weighted mean (levels)
         col = [c for c in avg_df.columns if c.startswith(f"{m}_recent_weighted_mean")][0]
-        line_months(avg_df[col], f"Recent-Weighted Mean by Month: {m.replace('_',' ').title()}",
-                    f"recent_weighted_mean_{m}.png", ylabel="Price")
-        # Actual vs Trend over time
-        line_trend_vs_actual(m, f"Actual vs Trend: {m.replace('_',' ').title()}",
+        line_months(avg_df[col],
+                    f"Recent-Weighted Mean by Month: {m.replace('_',' ').title()}",
+                    f"recent_weighted_mean_{m}.png",
+                    ylabel="Price")
+        line_trend_vs_actual(m,
+                             f"Actual vs Trend: {m.replace('_',' ').title()}",
                              f"trend_vs_actual_{m}.png")
+
+        # ====== NEW CHARTS YOU ASKED FOR ======
+        heatmap_month_by_year(m)
+        lines_month_by_year(m)
 
 # ----------------- CLI -----------------
 def main():
