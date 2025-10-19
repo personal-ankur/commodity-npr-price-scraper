@@ -158,7 +158,7 @@ def main():
     print(f"\nWill scrape {len(YEARS)} years × {len(MONTHS)} months = {len(YEARS) * len(MONTHS)} combinations")
     
     # Create output file immediately
-    output_file = f"gold_silver_rates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    output_file = f"data/gold_silver_rates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     fieldnames = ['date', 'year', 'month', 'day', 'fine_gold', 'standard_gold', 'silver']
     
     # Statistics tracking
