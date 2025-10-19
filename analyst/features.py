@@ -183,7 +183,11 @@ class FeatureBuilder:
             )
             ordered_row = [feature_row[col] for col in self.feature_columns_]
             X_row = np.asarray(ordered_row, dtype=float).reshape(1, -1)
-            y_hat = float(model.predict(X_row)[0])
+            y_raw = float(model.predict(X_row)[0])
+            baseline = float(history_series.iloc[-1])
+            y_hat = 0.8 * baseline + 0.2 * y_raw
+            if y_hat < 0:
+                y_hat = 0.0
 
             predicted_date = future_dates[step]
             record = {

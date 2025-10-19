@@ -43,7 +43,7 @@ class PriceForecastPipeline:
         random_state: int = 42,
         mode: str = "robust",
         training_window: Optional[int] = None,
-        prediction_margin: float = 0.03,
+        prediction_margin: float = 0.02,
         verbose: bool = True,
     ) -> None:
         self.data_path = Path(data_path)
@@ -112,9 +112,10 @@ class PriceForecastPipeline:
                 df=frame,
                 base_features=base_features,
                 model=artifact.estimator,
-                calendar=data_bundle.calendar,
+                calendar=calendar,
                 horizon=self.horizon,
             )
+            forecast_df = self._constrain_forecast(forecast_df, frame, target)
             forecast_frames.append(forecast_df)
 
         if self.verbose:
@@ -143,13 +144,19 @@ class PriceForecastPipeline:
         base_lags = [1, 2, 3, 5, 7, 14, 21, 28]
         base_windows = [3, 7, 14, 28]
 
-        lags = [lag for lag in base_lags if lag < history_length - 2]
-        if len(lags) < 3:
-            lags = base_lags[:3]
+        min_samples_desired = max(8, self.horizon // 2)
+        max_lag_allowed = max(1, history_length - min_samples_desired)
+        lags = [lag for lag in base_lags if lag <= max_lag_allowed and lag < history_length]
+        if len(lags) < 2:
+            lags = base_lags[:2]
+            lags = [lag for lag in lags if lag < history_length] or [1]
 
-        windows = [window for window in base_windows if window < history_length - 2]
+        max_window_allowed = max(2, history_length - min_samples_desired)
+        windows = [window for window in base_windows if window <= max_window_allowed]
+        windows = [window for window in windows if window < history_length]
         if len(windows) < 2:
-            windows = base_windows[:2]
+            fallback = [w for w in base_windows if w < history_length]
+            windows = fallback[:2] if fallback else [max(2, history_length - 1)]
 
         config = FeatureBuilderConfig(
             target_column=target,
@@ -163,10 +170,29 @@ class PriceForecastPipeline:
 
     def _determine_cv_splits(self, n_samples: int) -> int:
         max_splits = 2 if self.mode == "fast" else 4
-        splits = min(max_splits, max(2, n_samples - 1))
-        if splits >= n_samples:
-            splits = n_samples - 1
+        splits = min(max_splits, n_samples - 1)
         return max(splits, 2)
+
+    def _constrain_forecast(self, forecast_df: pd.DataFrame, history_df: pd.DataFrame, target: str) -> pd.DataFrame:
+        if self.prediction_margin == 0:
+            return forecast_df
+
+        recent = history_df[target].dropna()
+        if recent.empty:
+            return forecast_df
+
+        margin = self.prediction_margin
+        lower = float(recent.min() * (1 - margin))
+        upper = float(recent.max() * (1 + margin))
+        column = f"{target}_prediction"
+        forecast_df[column] = forecast_df[column].clip(lower=lower, upper=upper)
+
+        if self.verbose:
+            print(
+                f"[pipeline] Applied bounds for '{target}' within [{lower:,.2f}, {upper:,.2f}].",
+                flush=True,
+            )
+        return forecast_df
 
     def _combine_forecasts(self, forecast_frames: List[pd.DataFrame]) -> pd.DataFrame:
         if not forecast_frames:

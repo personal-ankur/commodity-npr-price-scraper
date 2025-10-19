@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of most recent days to use for training/analysis. Use all data when omitted.",
     )
     parser.add_argument(
+        "--prediction-margin",
+        type=float,
+        default=0.02,
+        help="Percentage margin (e.g., 0.03 for ±3%) to bound forecasts around recent observations.",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress verbose pipeline logging.",
@@ -64,6 +70,7 @@ def main() -> None:
         output_dir=args.output_dir,
         mode=args.mode,
         training_window=args.training_window,
+        prediction_margin=args.prediction_margin,
         verbose=not args.quiet,
     )
     result = pipeline.run()
